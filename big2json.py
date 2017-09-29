@@ -2,6 +2,11 @@
 
 import sys
 import json
+import re
+from collections import OrderedDict
+
+DEBUG = True
+
 
 # http://fabletlcmod.com/wiki/doku.php?id=file_formats:big
 class BigArchive:
@@ -12,7 +17,7 @@ class BigArchive:
             raise ValueError("Not a BIG archive!")
         self.p = 0
         self._read_header()
-        self.chunks = self._split_data()
+        self.i_to_identifier = {}
 
     def _read_bytes(self, count):
         if self.p >= self.data_len or self.p + count > self.data_len:
@@ -24,61 +29,135 @@ class BigArchive:
     def _read_header(self):
         self._read_bytes(16)
 
-    def _split_data(self):
-        chunks = []
-        buff = []
-        last_bytes = []
-        while True:
-            r = self._read_bytes(1)
-            if r is None:
-                break
-            buff.extend(r)
-            last_bytes.extend(r)
-            # Shift
-            if len(last_bytes) > 4:
-                last_bytes = last_bytes[1:]
-            if len(last_bytes) == 4 and not any(last_bytes):
-                chunks.append(buff)
-                buff = []
-        if buff:
-            chunks.append(buff)
-        return chunks
-
-    def _read_string(self, chunk, idx, label=False):
+    def _read_string(self, length=0, modifier=False):
         chars = []
-        while True:
-            c = bytearray(chunk[idx:idx + 2])
-            idx += 2
-            # Both bytes null
-            if not any(c):
-                break
-            if label:
-                chars.append(c.decode("ascii", errors="ignore"))
-            else:
-                chars.append(c.decode("utf_16_le", errors="ignore"))
-        result = "".join(chars)
-        return result, idx 
+        i = 0
 
-    def _read_item(self, chunk):
-        idx = 0
-        text, idx = self._read_string(chunk, idx)
-        # Something
-        idx += 4
-        sound_file, idx = self._read_string(chunk, idx, label=True)
-        speaker, idx = self._read_string(chunk, idx, label=True)
-        identifier, idx = self._read_string(chunk, idx, label=True)
-        return identifier, text
+        # Read chars
+        while True:
+            if length:
+                c = self._read_bytes(1)
+                i += 1
+                chars.append(c.decode("ascii"))
+                # Fixed length string
+                if i == length:
+                    break
+            elif modifier:
+                c = self._read_bytes(1)
+                # NULL limited string
+                if not any(c):
+                    break
+                chars.append(c.decode("ascii"))
+            else:
+                c = self._read_bytes(2)
+                # NULL limited string
+                if not any(c):
+                    break
+                chars.append(c.decode("utf_16_le"))
+
+        result = "".join(chars)
+        return result
+
+    def _read_4byte_int(self):
+        data = self._read_bytes(4)
+        return int("%x%x%x%x" % (data[3], data[2], data[1], data[0]), 16)
+
+    def _read_item(self):
+        texts = []
+        sound_file_len = 0
+        sound_file = ""
+        speaker_len = 0
+        speaker = ""
+        identifier = ""
+        modifier = ""
+
+        text_choices = self._read_4byte_int()
+        # Some magical limits
+        if 0 < text_choices < 10:
+            what = "group"
+            for _ in range(text_choices):
+                i_num = self._read_4byte_int()
+                linked_identifier = self.i_to_identifier[i_num]
+                texts.append(linked_identifier)
+
+            identifier_len = self._read_4byte_int()
+            if identifier_len:
+                identifier = self._read_string(length=identifier_len)
+        else:
+            what = "text"
+            # Rollback
+            self.p -= 4
+
+            texts.append(self._read_string())
+
+            sound_file_len = self._read_4byte_int()
+            if sound_file_len:
+                sound_file = self._read_string(length=sound_file_len)
+
+            speaker_len = self._read_4byte_int()
+            if speaker_len:
+                speaker = self._read_string(length=speaker_len)
+
+            identifier_len = self._read_4byte_int()
+            if identifier_len:
+                identifier = self._read_string(length=identifier_len)
+
+            modifier_count = self._read_4byte_int()
+            for _ in range(modifier_count):
+                self._read_4byte_int()  # Not sure what this means
+                modifier += self._read_string(modifier=True)
+
+        if DEBUG:
+            if what == "text":
+                print("Text: '%s'" % texts[0])
+                print("Sound file length: '%d'" % sound_file_len)
+                print("Sound file: '%s'" % sound_file)
+                print("Speaker length: '%d'" % speaker_len)
+                print("Speaker: '%s'" % speaker)
+            else:
+                print("Text groups: '%s'" % ", ".join(texts))
+            print("Identifier length: '%d'" % identifier_len)
+            print("Identifier: '%s'" % identifier)
+            print("Modifier: '%s'" % modifier)
+
+        return what, identifier, texts
 
     def get_items(self):
-        items = {}
-        for chunk in self.chunks:
-            identifier, text = self._read_item(chunk)
-            if identifier:
-               items[identifier] = text
+        items = OrderedDict()
+        i = 0
+        while True:
+            i += 1
+            if DEBUG:
+                print("ID: %d" % i)
+            what, identifier, texts = self._read_item()
+            self.i_to_identifier[i] = identifier
+            if what == "text":
+                items[identifier] = texts[0]
+            else:
+                items[identifier] = texts
+
+            # Test
+            if i > 26809:
+                break
+
         return items
 
 
-big = BigArchive(sys.stdin.read())
-#print(len(big.get_items()))
-print(json.dumps(big.get_items(), indent=4, ensure_ascii=False, sort_keys=True).encode("utf_8"))
+def validate_items(translation_dict):
+    success = True
+    label_pattern = re.compile("^[A-Z0-9_]+$")
+    for key, value in translation_dict.items():
+        if not label_pattern.match(key):
+            print("Invalid key: '%s'" % key)
+            success = False
+    return success
 
+
+big = BigArchive(sys.stdin.read())
+translations = big.get_items()
+
+if validate_items(translations):
+    if not DEBUG:
+        print(json.dumps(translations, indent=4, ensure_ascii=False, sort_keys=False).encode("utf_8"))
+else:
+    sys.exit(1)
