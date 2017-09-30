@@ -123,6 +123,8 @@ class BigFile:
             symbol_len = self._read_4byte_int()
             symbol = self._read_string(length=symbol_len)
 
+            self.i_to_identifier[item_id] = symbol
+
             # Not sure what is this/don't care
             a1 = self._read_4byte_int()
             a2 = self._read_4byte_int()
@@ -154,12 +156,11 @@ class BigFile:
             # Read item
             save_p = self.p
             self.p = item_start
-            identifier, texts = self._read_item(item_type_1)
+            texts = self._read_item(item_type_1)
             if item_type_1 == TEXT_ITEM_TYPE:
-                self.items[identifier] = texts[0]
+                self.items[symbol] = texts[0]
             elif item_type_1 == GROUP_TEXT_ITEM_TYPE:
                 self.items[symbol] = texts
-            self.i_to_identifier[item_id] = identifier
             self.p = save_p
 
     def _read_item(self, item_type):
@@ -213,7 +214,7 @@ class BigFile:
             elif item_type == GROUP_TEXT_ITEM_TYPE:
                 print("Text groups: '%s'" % ", ".join(texts))
 
-        return identifier, texts
+        return texts
 
     def get_header(self):
         return {'version': self.version, 'bank_address': self.bank_address, 'banks_count': self.banks_count,
