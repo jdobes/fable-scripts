@@ -8,9 +8,16 @@ class BigFile:
     def __init__(self, data):
         self.data = data
         self.data_len = len(data)
-        if self.data[0:4] != "BIGB":
-            raise ValueError("Not a BIG archive!")
         self.p = 0
+        self.version = None
+        self.bank_address = None
+        self.banks_count = None
+        self.bank_name = None
+        self.bank_id = None
+        self.entries_in_bank = None
+        self.bank_index_start = None
+        self.bank_index_size = None
+        self.bank_block_size = None
         self._read_header()
         self.i_to_identifier = {}
 
@@ -21,28 +28,32 @@ class BigFile:
         self.p += count
         return bytearray(r)
 
-    def _read_header(self):
-        self._read_bytes(16)
-
-    def _read_string(self, length=0, modifier=False):
+    def _read_string(self, length=0, utf16le=False):
         chars = []
         i = 0
 
+        # Just for sure
+        if length and utf16le:
+            raise AttributeError("Only ascii strings can have fixed length.")
+
         # Read chars
         while True:
-            if length:
-                c = self._read_bytes(1)
-                i += 1
-                chars.append(c.decode("ascii"))
-                # Fixed length string
-                if i == length:
-                    break
-            elif modifier:
-                c = self._read_bytes(1)
-                # NULL limited string
-                if not any(c):
-                    break
-                chars.append(c.decode("ascii"))
+            if not utf16le:
+                if length:
+                    c = self._read_bytes(1)
+                    i += 1
+                    # Don't save NULLs
+                    if any(c):
+                        chars.append(c.decode("ascii"))
+                    # Fixed length string
+                    if i == length:
+                        break
+                else:
+                    c = self._read_bytes(1)
+                    # NULL limited string
+                    if not any(c):
+                        break
+                    chars.append(c.decode("ascii"))
             else:
                 c = self._read_bytes(2)
                 # NULL limited string
@@ -56,6 +67,30 @@ class BigFile:
     def _read_4byte_int(self):
         data = self._read_bytes(4)
         return int("%x%x%x%x" % (data[3], data[2], data[1], data[0]), 16)
+
+    def _read_header(self):
+        # BIGB
+        file_sign = self._read_string(length=4)
+        if file_sign != "BIGB":
+            raise ValueError("Not a BIG file!")
+        # Version
+        self.version = self._read_string(length=4)
+        # Bank address
+        self.bank_address = self._read_4byte_int()
+        # Unknown
+        self._read_bytes(4)
+
+        # Read bank
+        p_save = self.p
+        self.p = self.bank_address
+        self.banks_count = self._read_4byte_int()
+        self.bank_name = self._read_string()
+        self.bank_id = self._read_4byte_int()
+        self.entries_in_bank = self._read_4byte_int()
+        self.bank_index_start = self._read_4byte_int()
+        self.bank_index_size = self._read_4byte_int()
+        self.bank_block_size = self._read_4byte_int()
+        self.p = p_save
 
     def _read_item(self):
         texts = []
@@ -83,7 +118,7 @@ class BigFile:
             # Rollback
             self.p -= 4
 
-            texts.append(self._read_string())
+            texts.append(self._read_string(utf16le=True))
 
             sound_file_len = self._read_4byte_int()
             if sound_file_len:
@@ -100,7 +135,7 @@ class BigFile:
             modifier_count = self._read_4byte_int()
             for _ in range(modifier_count):
                 self._read_4byte_int()  # Not sure what this means
-                modifier += self._read_string(modifier=True)
+                modifier += self._read_string()
 
         if DEBUG:
             if what == "text":
@@ -116,6 +151,13 @@ class BigFile:
             print("Modifier: '%s'" % modifier)
 
         return what, identifier, texts
+
+    def get_header(self):
+        header = {'version': self.version, 'bank_address': self.bank_address, 'banks_count': self.banks_count,
+                  'bank_name': self.bank_name, 'bank_id': self.bank_id, 'entries_in_bank': self.entries_in_bank,
+                  'bank_index_start': self.bank_index_start, 'bank_index_size': self.bank_index_size,
+                  'bank_block_size': self.bank_block_size}
+        return header
 
     def get_items(self):
         items = OrderedDict()
