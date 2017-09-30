@@ -12,9 +12,10 @@ if __name__ == "__main__":
     big = BigFile(sys.stdin.read())
     if DEBUG:
         print(big.get_header())
+        print(big.get_index())
     translations = big.get_items()
     if validate_items(translations):
         if not DEBUG:
             print(json.dumps(translations, indent=4, ensure_ascii=False, sort_keys=False).encode("utf_8"))
-        else:
-            sys.exit(1)
+    else:
+        sys.exit(1)

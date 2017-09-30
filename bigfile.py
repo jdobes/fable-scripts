@@ -2,6 +2,9 @@ from collections import OrderedDict
 
 from config import DEBUG
 
+TEXT_ITEM_TYPE = 0
+GROUP_TEXT_ITEM_TYPE = 1
+
 
 # http://fabletlcmod.com/wiki/doku.php?id=file_formats:big
 class BigFile:
@@ -18,8 +21,13 @@ class BigFile:
         self.bank_index_start = None
         self.bank_index_size = None
         self.bank_block_size = None
-        self._read_header()
+        self.item_types_count = None
+        self.item_types = None
         self.i_to_identifier = {}
+        self.items = OrderedDict()
+        # Parse
+        self._read_header()
+        self._read_index()
 
     def _read_bytes(self, count):
         if self.p >= self.data_len or self.p + count > self.data_len:
@@ -66,7 +74,7 @@ class BigFile:
 
     def _read_4byte_int(self):
         data = self._read_bytes(4)
-        return int("%x%x%x%x" % (data[3], data[2], data[1], data[0]), 16)
+        return int("%02x%02x%02x%02x" % (data[3], data[2], data[1], data[0]), 16)
 
     def _read_header(self):
         # BIGB
@@ -80,8 +88,7 @@ class BigFile:
         # Unknown
         self._read_bytes(4)
 
-        # Read bank
-        p_save = self.p
+        # Read bank info
         self.p = self.bank_address
         self.banks_count = self._read_4byte_int()
         self.bank_name = self._read_string()
@@ -90,36 +97,90 @@ class BigFile:
         self.bank_index_start = self._read_4byte_int()
         self.bank_index_size = self._read_4byte_int()
         self.bank_block_size = self._read_4byte_int()
-        self.p = p_save
 
-    def _read_item(self):
+    def _read_index(self):
+        self.p = self.bank_index_start
+        self.item_types_count = self._read_4byte_int()
+        self.item_types = {}
+        item_sum = 0
+        for _ in range(self.item_types_count):
+            item_type = self._read_4byte_int()
+            item_count = self._read_4byte_int()
+            item_sum += item_count
+            self.item_types[item_type] = item_count
+
+        # Sanity check
+        if item_sum != self.entries_in_bank:
+            raise AssertionError("Incorrect number of items.")
+
+        for _ in range(self.entries_in_bank):
+            magic_number = self._read_4byte_int()
+            item_id = self._read_4byte_int()
+            item_type_1 = self._read_4byte_int()
+            item_size = self._read_4byte_int()
+            item_start = self._read_4byte_int()
+            item_type_2 = self._read_4byte_int()
+            symbol_len = self._read_4byte_int()
+            symbol = self._read_string(length=symbol_len)
+
+            # Not sure what is this/don't care
+            a1 = self._read_4byte_int()
+            a2 = self._read_4byte_int()
+            a3 = self._read_4byte_int()
+            if item_type_1 == TEXT_ITEM_TYPE:
+                a4 = self._read_4byte_int()
+            else:
+                a4 = None
+
+            # Sanity check
+            if item_type_1 not in self.item_types or item_type_2 not in self.item_types:
+                raise ValueError("Invalid type.")
+
+            if DEBUG:
+                print("")
+                print("Magic number: '%s'" % magic_number)
+                print("Item ID: '%s'" % item_id)
+                print("Item type 1: '%s'" % item_type_1)
+                print("Item size: '%s'" % item_size)
+                print("Item start: '%s'" % item_start)
+                print("Item type 2: '%s'" % item_type_2)
+                print("Symbol length: '%s'" % symbol_len)
+                print("Symbol: '%s'" % symbol)
+                print("?1: '%s'" % a1)
+                print("?2: '%s'" % a2)
+                print("?3: '%s'" % a3)
+                print("?4: '%s'" % a4)
+
+            # Read item
+            save_p = self.p
+            self.p = item_start
+            identifier, texts = self._read_item(item_type_1)
+            if item_type_1 == TEXT_ITEM_TYPE:
+                self.items[identifier] = texts[0]
+            elif item_type_1 == GROUP_TEXT_ITEM_TYPE:
+                self.items[symbol] = texts
+            self.i_to_identifier[item_id] = identifier
+            self.p = save_p
+
+    def _read_item(self, item_type):
         texts = []
-        sound_file_len = 0
-        sound_file = ""
-        speaker_len = 0
-        speaker = ""
-        identifier = ""
-        modifier = ""
+        sound_file_len = None
+        sound_file = None
+        speaker_len = None
+        speaker = None
+        identifier_len = None
+        identifier = None
+        modifier = None
 
-        text_choices = self._read_4byte_int()
-        # Some magical limits
-        if 0 < text_choices < 10:
-            what = "group"
+        if item_type == GROUP_TEXT_ITEM_TYPE:
+            text_choices = self._read_4byte_int()
             for _ in range(text_choices):
                 i_num = self._read_4byte_int()
                 linked_identifier = self.i_to_identifier[i_num]
                 texts.append(linked_identifier)
 
-            identifier_len = self._read_4byte_int()
-            if identifier_len:
-                identifier = self._read_string(length=identifier_len)
-        else:
-            what = "text"
-            # Rollback
-            self.p -= 4
-
+        elif item_type == TEXT_ITEM_TYPE:
             texts.append(self._read_string(utf16le=True))
-
             sound_file_len = self._read_4byte_int()
             if sound_file_len:
                 sound_file = self._read_string(length=sound_file_len)
@@ -133,48 +194,35 @@ class BigFile:
                 identifier = self._read_string(length=identifier_len)
 
             modifier_count = self._read_4byte_int()
+            if modifier_count:
+                modifier = ""
             for _ in range(modifier_count):
                 self._read_4byte_int()  # Not sure what this means
                 modifier += self._read_string()
 
         if DEBUG:
-            if what == "text":
+            if item_type == TEXT_ITEM_TYPE:
                 print("Text: '%s'" % texts[0])
-                print("Sound file length: '%d'" % sound_file_len)
+                print("Sound file length: '%s'" % sound_file_len)
                 print("Sound file: '%s'" % sound_file)
-                print("Speaker length: '%d'" % speaker_len)
+                print("Speaker length: '%s'" % speaker_len)
                 print("Speaker: '%s'" % speaker)
-            else:
+                print("Identifier length: '%s'" % identifier_len)
+                print("Identifier: '%s'" % identifier)
+                print("Modifier: '%s'" % modifier)
+            elif item_type == GROUP_TEXT_ITEM_TYPE:
                 print("Text groups: '%s'" % ", ".join(texts))
-            print("Identifier length: '%d'" % identifier_len)
-            print("Identifier: '%s'" % identifier)
-            print("Modifier: '%s'" % modifier)
 
-        return what, identifier, texts
+        return identifier, texts
 
     def get_header(self):
-        header = {'version': self.version, 'bank_address': self.bank_address, 'banks_count': self.banks_count,
-                  'bank_name': self.bank_name, 'bank_id': self.bank_id, 'entries_in_bank': self.entries_in_bank,
-                  'bank_index_start': self.bank_index_start, 'bank_index_size': self.bank_index_size,
-                  'bank_block_size': self.bank_block_size}
-        return header
+        return {'version': self.version, 'bank_address': self.bank_address, 'banks_count': self.banks_count,
+                'bank_name': self.bank_name, 'bank_id': self.bank_id, 'entries_in_bank': self.entries_in_bank,
+                'bank_index_start': self.bank_index_start, 'bank_index_size': self.bank_index_size,
+                'bank_block_size': self.bank_block_size}
+
+    def get_index(self):
+        return {'item_types_count': self.item_types_count, 'item_types': self.item_types}
 
     def get_items(self):
-        items = OrderedDict()
-        i = 0
-        while True:
-            i += 1
-            if DEBUG:
-                print("ID: %d" % i)
-            what, identifier, texts = self._read_item()
-            self.i_to_identifier[i] = identifier
-            if what == "text":
-                items[identifier] = texts[0]
-            else:
-                items[identifier] = texts
-
-            # Test
-            if i > 26809:
-                break
-
-        return items
+        return {self.bank_name: self.items}
