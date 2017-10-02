@@ -2,6 +2,9 @@ from collections import OrderedDict
 
 from config import DEBUG
 
+BREED_BIG = 0
+BREED_BBB = 1
+
 TEXT_ITEM_TYPE = 0
 GROUP_TEXT_ITEM_TYPE = 1
 
@@ -12,6 +15,7 @@ class BinaryTextFile:
         self.data = data
         self.data_len = len(data)
         self.p = 0
+        self.breed = None
         self.version = None
         self.bank_address = None
         self.banks_count = None
@@ -79,39 +83,55 @@ class BinaryTextFile:
     def _read_header(self):
         # BIGB
         file_sign = self._read_string(length=4)
-        if file_sign != "BIGB":
-            raise ValueError("Not a BIG file!")
+        if file_sign == "BIGB":
+            self.breed = BREED_BIG
+        elif file_sign == "BBBB":
+            self.breed = BREED_BBB
+        else:
+            raise ValueError("Not a BIG or BBB file!")
         # Version
         self.version = self._read_string(length=4)
+
+        if self.breed == BREED_BBB:
+            self._read_bytes(20)
+
         # Bank address
         self.bank_address = self._read_4byte_int()
-        # Unknown
-        self._read_bytes(4)
 
         # Read bank info
         self.p = self.bank_address
-        self.banks_count = self._read_4byte_int()
-        self.bank_name = self._read_string()
-        self.bank_id = self._read_4byte_int()
+        if self.breed == BREED_BIG:
+            self.banks_count = self._read_4byte_int()
+            self.bank_name = self._read_string()
+            self.bank_id = self._read_4byte_int()
+        else:
+            self._read_bytes(8)
         self.entries_in_bank = self._read_4byte_int()
-        self.bank_index_start = self._read_4byte_int()
-        self.bank_index_size = self._read_4byte_int()
-        self.bank_block_size = self._read_4byte_int()
+        if self.breed == BREED_BIG:
+            self.bank_index_start = self._read_4byte_int()
+            self.bank_index_size = self._read_4byte_int()
+            self.bank_block_size = self._read_4byte_int()
+        else:
+            self._read_bytes(8)  # 1, 83c
+            self.bank_index_start = self.p
 
     def _read_index(self):
         self.p = self.bank_index_start
-        self.item_types_count = self._read_4byte_int()
-        self.item_types = {}
-        item_sum = 0
-        for _ in range(self.item_types_count):
-            item_type = self._read_4byte_int()
-            item_count = self._read_4byte_int()
-            item_sum += item_count
-            self.item_types[item_type] = item_count
+        if self.breed == BREED_BIG:
+            self.item_types_count = self._read_4byte_int()
+            self.item_types = {}
+            item_sum = 0
+            for _ in range(self.item_types_count):
+                item_type = self._read_4byte_int()
+                item_count = self._read_4byte_int()
+                item_sum += item_count
+                self.item_types[item_type] = item_count
 
-        # Sanity check
-        if item_sum != self.entries_in_bank:
-            raise AssertionError("Incorrect number of items.")
+            # Sanity check
+            if item_sum != self.entries_in_bank:
+                raise AssertionError("Incorrect number of items.")
+        else:
+            self._read_bytes(8)
 
         for _ in range(self.entries_in_bank):
             magic_number = self._read_4byte_int()
@@ -135,8 +155,9 @@ class BinaryTextFile:
                 a4 = None
 
             # Sanity check
-            if item_type_1 not in self.item_types or item_type_2 not in self.item_types:
-                raise ValueError("Invalid type.")
+            if self.breed == BREED_BIG:
+                if item_type_1 not in self.item_types or item_type_2 not in self.item_types:
+                    raise ValueError("Invalid type.")
 
             if DEBUG:
                 print("")
