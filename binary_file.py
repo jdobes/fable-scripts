@@ -247,4 +247,4 @@ class BinaryTextFile:
         return {'item_types_count': self.item_types_count, 'item_types': self.item_types}
 
     def get_items(self):
-        return {self.bank_name: self.items}
+        return self.items
