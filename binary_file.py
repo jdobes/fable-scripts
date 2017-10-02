@@ -7,7 +7,7 @@ GROUP_TEXT_ITEM_TYPE = 1
 
 
 # http://fabletlcmod.com/wiki/doku.php?id=file_formats:big
-class BigFile:
+class BinaryTextFile:
     def __init__(self, data):
         self.data = data
         self.data_len = len(data)
